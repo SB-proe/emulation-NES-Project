@@ -2,24 +2,24 @@ package nes
 
 //Flags
 const (
-	C = 1 << iota
-	Z
-	I
-	D
-	B
-	U
-	V
-	N
+	C = 1 << iota // Carry
+	Z             // Zero
+	I             // Interrupts
+	D             // Decimal
+	B             // Break
+	U             // Unused
+	V             // Overflow
+	N             // Negative
 )
 
 //CPU Registers
 type Registers struct {
-	a  uint8  //Accumulator
-	x  uint8  //X Register
-	y  uint8  //Y Register
-	st uint8  //Stack Register
-	sp uint8  //Stack Pointer
-	pc uint16 //Program Counter
+	ac uint8  // Accumulator
+	x  uint8  // X Register
+	y  uint8  // Y Register
+	sr uint8  // Stack Register
+	sp uint8  // Stack Pointer
+	pc uint16 // Program Counter
 }
 
 func NewRegisters() (reg Registers) {
@@ -29,30 +29,29 @@ func NewRegisters() (reg Registers) {
 }
 
 func (reg *Registers) Zero() {
-	reg.a = 0x00
+	reg.ac = 0x00
 	reg.x = 0x00
 	reg.y = 0x00
-	reg.st = 0x00
+	reg.sr = 0x04
 	reg.sp = 0x00
 	reg.pc = 0x0000
 }
 
 func (cpu *CPU) getFlag(f uint8) bool {
-	return (cpu.flags & f) > 0
+	return (cpu.reg.sr & f) > 0
 }
 
 func (cpu *CPU) setFlag(f uint8, b bool) {
 	if b {
-		cpu.flags |= f
+		cpu.reg.sr |= f
 	} else {
-		cpu.flags &= ^f
+		cpu.reg.sr &= ^f
 	}
 }
 
 type CPU struct {
 	reg     Registers //Registers
-	flags   uint8     //Flags
-	M       uint8     //Current working memory
+	M       uint8     //Current memory (for emulation)
 	addr    uint16    //Address (for emulation)
 	op      uint8     //Current OP code
 	cycles  uint8     //Cycles in operation
@@ -70,7 +69,6 @@ func newCPU() *CPU {
 
 func (cpu *CPU) zeroCPU() {
 	cpu.reg = NewRegisters()
-	cpu.flags = 0x04
 	cpu.M = 0x00
 	cpu.addr = 0x0000
 	cpu.op = 0x00
@@ -177,7 +175,7 @@ func (cpu *CPU) aby() uint8 {
 
 // Accumulator
 func (cpu *CPU) acc() uint8 {
-	cpu.M = cpu.reg.a
+	cpu.M = cpu.reg.ac
 	return 0
 }
 
@@ -189,7 +187,7 @@ func (cpu *CPU) imm() uint8 {
 
 // Implied
 func (cpu *CPU) imp() uint8 {
-	cpu.M = cpu.reg.a
+	cpu.M = cpu.reg.ac
 	return 0
 }
 
@@ -281,149 +279,332 @@ func (cpu *CPU) zpy() uint8 {
 
 // Add with Carry
 func (cpu *CPU) adc() uint8 {
-	return 0
+	cpu.fetch()
+	temp := uint16(cpu.reg.ac) + uint16(cpu.M)
+	if cpu.getFlag(C) {
+		temp += 1
+	}
+	cpu.setFlag(N, (temp&0x80) == 0x80)
+	cpu.setFlag(Z, (temp&0x00FF) == 0x00)
+	cpu.setFlag(C, temp > 0x00FF)
+	cpu.setFlag(V, ((^(uint16(cpu.reg.ac) ^ uint16(cpu.M)))&(uint16(cpu.reg.ac)^temp)&0x80) == 0x80)
+	cpu.reg.ac = uint8(temp & 0x00FF)
+	return 1
 }
 
 // AND
 func (cpu *CPU) and() uint8 {
 	cpu.fetch()
-	cpu.reg.a = cpu.reg.a & cpu.M
+	cpu.reg.ac = cpu.reg.ac & cpu.M
+	cpu.setFlag(N, (cpu.reg.ac&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.ac == 0x00)
 
 	return 0
 }
 
 // Arithmetic Shift Left
 func (cpu *CPU) asl() uint8 {
+	cpu.fetch()
+
+	temp := uint16(cpu.M) << 1
+
+	cpu.setFlag(N, (temp&0x80) == 0x80)
+	cpu.setFlag(Z, temp == 0x00)
+	cpu.setFlag(C, temp > 0x00FF)
+
+	if cpu.opTable[cpu.op].addrName == "acc" || cpu.opTable[cpu.op].addrName == "imp" {
+		cpu.reg.ac = uint8(temp & 0x00FF)
+	} else {
+		cpu.ram.Write16(cpu.addr, uint8(temp&0x00FF))
+	}
+
 	return 0
 }
 
 // Branch on Carry Clear
 func (cpu *CPU) bcc() uint8 {
+	if !cpu.getFlag(C) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // Branch on Carry Set
 func (cpu *CPU) bcs() uint8 {
+	if cpu.getFlag(C) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
+
 	return 0
 }
 
 // Branch on Equal (Zero Set)
 func (cpu *CPU) beq() uint8 {
+	if cpu.getFlag(Z) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // Bit Test
 func (cpu *CPU) bit() uint8 {
+	cpu.fetch()
+	temp := cpu.reg.ac & cpu.M
+
+	cpu.setFlag(N, (temp&0x80) == 0x80)
+	cpu.setFlag(Z, temp == 0x00)
+	cpu.setFlag(V, (temp&0x40) == 0x40)
 	return 0
 }
 
 // Branch on Minus (Negative Set)
 func (cpu *CPU) bmi() uint8 {
+	if cpu.getFlag(N) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // Branch on Not Equal
 func (cpu *CPU) bne() uint8 {
+	if !cpu.getFlag(Z) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // Branch on Plus (Negative Clear)
 func (cpu *CPU) bpl() uint8 {
+	if !cpu.getFlag(N) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // Break/Interrupt
 func (cpu *CPU) brk() uint8 {
+	//TO-DO***
 	return 0
 }
 
 // branch on overflow clear
 func (cpu *CPU) bvc() uint8 {
+	if !cpu.getFlag(V) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // branch on overflow set
 func (cpu *CPU) bvs() uint8 {
+	if cpu.getFlag(V) {
+
+		cpu.cycles += 1
+		cpu.addr += cpu.reg.pc
+
+		if (cpu.addr & 0xFF00) != (cpu.reg.pc & 0xFF00) {
+			cpu.cycles += 1
+		}
+		cpu.reg.pc = cpu.addr
+	}
 	return 0
 }
 
 // clear carry
 func (cpu *CPU) clc() uint8 {
+	cpu.setFlag(C, false)
 	return 0
 }
 
 // clear decimal
 func (cpu *CPU) cld() uint8 {
+	cpu.setFlag(D, false)
 	return 0
 }
 
 // clear interrupt disable
 func (cpu *CPU) cli() uint8 {
+	cpu.setFlag(I, false)
 	return 0
 }
 
 // clear overflow
 func (cpu *CPU) clv() uint8 {
+	cpu.setFlag(V, false)
 	return 0
 }
 
 // compare (with accumulator)
 func (cpu *CPU) cmp() uint8 {
-	return 0
+	cpu.fetch()
+	temp := uint16(cpu.reg.ac - cpu.M)
+
+	cpu.setFlag(N, (temp&0x0080) == 0x80)
+	cpu.setFlag(Z, temp == 0x0000)
+	cpu.setFlag(C, uint16(cpu.reg.ac) >= temp)
+
+	return 1
 }
 
 // compare with X
 func (cpu *CPU) cpx() uint8 {
+	cpu.fetch()
+	temp := uint16(cpu.reg.x - cpu.M)
+
+	cpu.setFlag(N, (temp&0x0080) == 0x80)
+	cpu.setFlag(Z, temp == 0x0000)
+	cpu.setFlag(C, uint16(cpu.reg.x) >= temp)
+
 	return 0
 }
 
 // compare with Y
 func (cpu *CPU) cpy() uint8 {
+	cpu.fetch()
+	temp := uint16(cpu.reg.y - cpu.M)
+
+	cpu.setFlag(N, (temp&0x0080) == 0x80)
+	cpu.setFlag(Z, temp == 0x0000)
+	cpu.setFlag(C, uint16(cpu.reg.y) >= temp)
+
 	return 0
 }
 
 // decrement
 func (cpu *CPU) dec() uint8 {
+	cpu.fetch()
+	cpu.M -= 1
+
+	cpu.setFlag(N, (cpu.M&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.M == 0x0000)
+	cpu.ram.Write16(cpu.addr, cpu.M)
+
 	return 0
 }
 
 // decrement X
 func (cpu *CPU) dex() uint8 {
+	cpu.reg.x -= 1
+
+	cpu.setFlag(N, (cpu.reg.x&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.reg.x == 0x0000)
 	return 0
 }
 
 // decrement Y
 func (cpu *CPU) dey() uint8 {
+	cpu.reg.y -= 1
+
+	cpu.setFlag(N, (cpu.reg.y&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.reg.y == 0x0000)
 	return 0
 }
 
 // exclusive or (with accumulator)
 func (cpu *CPU) eor() uint8 {
-	return 0
+	cpu.fetch()
+	cpu.reg.ac = cpu.reg.ac ^ cpu.M
+
+	cpu.setFlag(N, (cpu.reg.ac&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.reg.ac == 0x0000)
+
+	return 1
 }
 
 // increment
 func (cpu *CPU) inc() uint8 {
+	cpu.fetch()
+	cpu.M += 1
+
+	cpu.setFlag(N, (cpu.M&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.M == 0x0000)
+	cpu.ram.Write16(cpu.addr, cpu.M)
 	return 0
 }
 
 // increment X
 func (cpu *CPU) inx() uint8 {
+	cpu.reg.x += 1
+
+	cpu.setFlag(N, (cpu.reg.x&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.reg.x == 0x0000)
 	return 0
 }
 
 // increment Y
 func (cpu *CPU) iny() uint8 {
+	cpu.reg.y += 1
+
+	cpu.setFlag(N, (cpu.reg.y&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.reg.y == 0x0000)
 	return 0
 }
 
 // jump
 func (cpu *CPU) jmp() uint8 {
+	cpu.reg.pc = cpu.addr
 	return 0
 }
 
 // jump subroutine
 func (cpu *CPU) jsr() uint8 {
+	cpu.reg.pc -= 1
+
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), uint8((cpu.reg.pc>>8)&0x00FF))
+	cpu.reg.sp -= 1
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), uint8(cpu.reg.pc&0x00FF))
+	cpu.reg.sp -= 1
+
+	cpu.reg.pc = cpu.addr
 	return 0
 }
 
@@ -449,16 +630,24 @@ func (cpu *CPU) lsr() uint8 {
 
 // no operation
 func (cpu *CPU) nop() uint8 {
+	// nothing happens
 	return 0
 }
 
 // or with accumulator
 func (cpu *CPU) ora() uint8 {
-	return 0
+	cpu.fetch()
+	cpu.reg.ac = cpu.reg.ac | cpu.M
+
+	cpu.setFlag(N, (cpu.reg.ac&0x0080) == 0x80)
+	cpu.setFlag(Z, cpu.reg.ac == 0x0000)
+	return 1
 }
 
 // push accumulator
 func (cpu *CPU) pha() uint8 {
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), cpu.reg.ac)
+	cpu.reg.sp -= 1
 	return 0
 }
 
@@ -469,6 +658,10 @@ func (cpu *CPU) php() uint8 {
 
 // pull accumulator
 func (cpu *CPU) pla() uint8 {
+	cpu.reg.sp += 1
+	cpu.reg.ac = cpu.ram.Read16(0x0100+uint16(cpu.reg.sp), true)
+	cpu.setFlag(N, (cpu.reg.ac&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.ac == 0x00)
 	return 0
 }
 
@@ -499,21 +692,35 @@ func (cpu *CPU) rts() uint8 {
 
 // subtract with carry
 func (cpu *CPU) sbc() uint8 {
-	return 0
+	cpu.fetch()
+	temp := (uint16(cpu.M)) ^ 0x00FF
+	temp += uint16(cpu.reg.ac)
+	if cpu.getFlag(C) {
+		temp += 1
+	}
+	cpu.setFlag(N, (temp&0x80) == 0x80)
+	cpu.setFlag(Z, (temp&0x00FF) == 0x00)
+	cpu.setFlag(C, temp > 0x00FF)
+	cpu.setFlag(V, ((^(uint16(cpu.reg.ac) ^ uint16(cpu.M)))&(uint16(cpu.reg.ac)^temp)&0x80) == 0x80)
+	cpu.reg.ac = uint8(temp & 0x00FF)
+	return 1
 }
 
 // set carry
 func (cpu *CPU) sec() uint8 {
+	cpu.setFlag(C, true)
 	return 0
 }
 
 // set decimal
 func (cpu *CPU) sed() uint8 {
+	cpu.setFlag(D, true)
 	return 0
 }
 
 // set interrupt disable
 func (cpu *CPU) sei() uint8 {
+	cpu.setFlag(I, true)
 	return 0
 }
 
