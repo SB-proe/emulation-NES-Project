@@ -121,14 +121,30 @@ func (cpu *CPU) run(uint8) {
 	cpu.cycles -= 1
 }
 
+/*
+
+-------- Helpers --------
+
+*/
+
 func (cpu *CPU) fetch() {
 	if !(cpu.opTable[cpu.op].addrName == "acc" || cpu.opTable[cpu.op].addrName == "imp") {
 		cpu.M = cpu.ram.Read16(cpu.addr, true)
 	}
 }
 
+func (cpu *CPU) place(data uint16) {
+	if cpu.opTable[cpu.op].addrName == "acc" || cpu.opTable[cpu.op].addrName == "imp" {
+		cpu.reg.ac = uint8(data & 0x00FF)
+	} else {
+		cpu.ram.Write16(cpu.addr, uint8(data&0x00FF))
+	}
+}
+
 /*
-// ------Addressing Modes------
+
+-------- Addressing Modes --------
+
 */
 
 // Absolute
@@ -274,7 +290,9 @@ func (cpu *CPU) zpy() uint8 {
 }
 
 /*
-// ------Instruction Modes------
+
+-------- Instruction Modes --------
+
 */
 
 // Add with Carry
@@ -312,11 +330,7 @@ func (cpu *CPU) asl() uint8 {
 	cpu.setFlag(Z, temp == 0x00)
 	cpu.setFlag(C, temp > 0x00FF)
 
-	if cpu.opTable[cpu.op].addrName == "acc" || cpu.opTable[cpu.op].addrName == "imp" {
-		cpu.reg.ac = uint8(temp & 0x00FF)
-	} else {
-		cpu.ram.Write16(cpu.addr, uint8(temp&0x00FF))
-	}
+	cpu.place(temp)
 
 	return 0
 }
@@ -425,7 +439,15 @@ func (cpu *CPU) bpl() uint8 {
 
 // Break/Interrupt
 func (cpu *CPU) brk() uint8 {
-	//TO-DO***
+	cpu.setFlag(I, true)
+	cpu.reg.pc += 1
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), uint8((cpu.reg.pc>>8)&0x00FF))
+	cpu.reg.sp -= 1
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), uint8(cpu.reg.pc&0x00FF))
+	cpu.reg.sp -= 1
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), cpu.reg.sr|B)
+	cpu.reg.sp -= 1
+	cpu.reg.pc = uint16(cpu.ram.Read16(0xFFFF, true))<<8 | uint16(cpu.ram.Read16(0xFFFE, true))
 	return 0
 }
 
@@ -524,8 +546,8 @@ func (cpu *CPU) dec() uint8 {
 	cpu.fetch()
 	cpu.M -= 1
 
-	cpu.setFlag(N, (cpu.M&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.M == 0x0000)
+	cpu.setFlag(N, (cpu.M&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.M == 0x00)
 	cpu.ram.Write16(cpu.addr, cpu.M)
 
 	return 0
@@ -535,8 +557,8 @@ func (cpu *CPU) dec() uint8 {
 func (cpu *CPU) dex() uint8 {
 	cpu.reg.x -= 1
 
-	cpu.setFlag(N, (cpu.reg.x&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.reg.x == 0x0000)
+	cpu.setFlag(N, (cpu.reg.x&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.x == 0x00)
 	return 0
 }
 
@@ -544,8 +566,8 @@ func (cpu *CPU) dex() uint8 {
 func (cpu *CPU) dey() uint8 {
 	cpu.reg.y -= 1
 
-	cpu.setFlag(N, (cpu.reg.y&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.reg.y == 0x0000)
+	cpu.setFlag(N, (cpu.reg.y&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.y == 0x00)
 	return 0
 }
 
@@ -554,8 +576,8 @@ func (cpu *CPU) eor() uint8 {
 	cpu.fetch()
 	cpu.reg.ac = cpu.reg.ac ^ cpu.M
 
-	cpu.setFlag(N, (cpu.reg.ac&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.reg.ac == 0x0000)
+	cpu.setFlag(N, (cpu.reg.ac&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.ac == 0x00)
 
 	return 1
 }
@@ -565,8 +587,8 @@ func (cpu *CPU) inc() uint8 {
 	cpu.fetch()
 	cpu.M += 1
 
-	cpu.setFlag(N, (cpu.M&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.M == 0x0000)
+	cpu.setFlag(N, (cpu.M&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.M == 0x00)
 	cpu.ram.Write16(cpu.addr, cpu.M)
 	return 0
 }
@@ -575,8 +597,8 @@ func (cpu *CPU) inc() uint8 {
 func (cpu *CPU) inx() uint8 {
 	cpu.reg.x += 1
 
-	cpu.setFlag(N, (cpu.reg.x&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.reg.x == 0x0000)
+	cpu.setFlag(N, (cpu.reg.x&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.x == 0x00)
 	return 0
 }
 
@@ -584,8 +606,8 @@ func (cpu *CPU) inx() uint8 {
 func (cpu *CPU) iny() uint8 {
 	cpu.reg.y += 1
 
-	cpu.setFlag(N, (cpu.reg.y&0x0080) == 0x80)
-	cpu.setFlag(Z, cpu.reg.y == 0x0000)
+	cpu.setFlag(N, (cpu.reg.y&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.y == 0x00)
 	return 0
 }
 
@@ -608,23 +630,47 @@ func (cpu *CPU) jsr() uint8 {
 	return 0
 }
 
-// jump accumulator
+// load accumulator
 func (cpu *CPU) lda() uint8 {
-	return 0
+	cpu.fetch()
+	cpu.reg.ac = cpu.M
+
+	cpu.setFlag(N, (cpu.reg.ac&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.ac == 0x00)
+	return 1
 }
 
 // load X
 func (cpu *CPU) ldx() uint8 {
-	return 0
+	cpu.fetch()
+	cpu.reg.x = cpu.M
+
+	cpu.setFlag(N, (cpu.reg.x&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.x == 0x00)
+	return 1
 }
 
 // load Y
 func (cpu *CPU) ldy() uint8 {
-	return 0
+	cpu.fetch()
+	cpu.reg.y = cpu.M
+
+	cpu.setFlag(N, (cpu.reg.y&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.reg.y == 0x00)
+	return 1
 }
 
 // logical right shift
 func (cpu *CPU) lsr() uint8 {
+	cpu.fetch()
+	cpu.setFlag(C, (cpu.M&0x0001) == 0x0001)
+	cpu.M = cpu.M >> 1
+
+	cpu.setFlag(N, (cpu.M&0x80) == 0x80)
+	cpu.setFlag(Z, cpu.M == 0x00)
+
+	cpu.place(uint16(cpu.M))
+
 	return 0
 }
 
@@ -653,6 +699,8 @@ func (cpu *CPU) pha() uint8 {
 
 // push accumulator status (SR)
 func (cpu *CPU) php() uint8 {
+	cpu.ram.Write16(0x0100+uint16(cpu.reg.sp), cpu.reg.sp|B|U)
+	cpu.reg.sp -= 1
 	return 0
 }
 
@@ -667,26 +715,60 @@ func (cpu *CPU) pla() uint8 {
 
 // pull processor status (SR)
 func (cpu *CPU) plp() uint8 {
+	cpu.reg.sp += 1
+	cpu.reg.sr = cpu.ram.Read16(0x0100+uint16(cpu.reg.sp), true) & 0xCF // 0xCF = ^(U | B)
 	return 0
 }
 
 // rotate left
 func (cpu *CPU) rol() uint8 {
+	cpu.fetch()
+	temp := uint16(cpu.M << 1)
+	if cpu.getFlag(C) {
+		temp += 1
+	}
+	cpu.setFlag(N, (temp&0x0080) == 0x80)
+	cpu.setFlag(Z, temp == 0x0000)
+	cpu.setFlag(C, temp > 0x00FF)
+
+	cpu.place(temp)
+
 	return 0
 }
 
 // rotate right
 func (cpu *CPU) ror() uint8 {
+	cpu.fetch()
+	temp := cpu.M >> 1
+	if cpu.getFlag(C) {
+		temp |= 1 << 7
+	}
+
+	cpu.setFlag(N, (temp&0x80) == 0x80)
+	cpu.setFlag(Z, temp == 0x00)
+	cpu.setFlag(C, (temp&0x01) == 0x01)
+
+	cpu.place(uint16(temp))
+
 	return 0
 }
 
 // return from interrupt
 func (cpu *CPU) rti() uint8 {
+	cpu.reg.sp += 1
+	cpu.reg.sr = cpu.ram.Read16(0x0100+uint16(cpu.reg.sp), true) & 0xCF // 0xCF = ^(U | B)
+	cpu.reg.sp += 1
+	cpu.reg.pc = uint16(cpu.ram.Read16(0x0100+uint16(cpu.reg.sp)+1, true))<<8 | uint16(cpu.ram.Read16(0x0100+uint16(cpu.reg.sp), true))
+	cpu.reg.sp += 1
 	return 0
 }
 
 // return from subroutine
 func (cpu *CPU) rts() uint8 {
+	cpu.reg.sp += 1
+	cpu.reg.pc = uint16(cpu.ram.Read16(0x0100+uint16(cpu.reg.sp)+1, true))<<8 | uint16(cpu.ram.Read16(0x0100+uint16(cpu.reg.sp), true))
+	cpu.reg.sp += 1
+	cpu.reg.pc += 1
 	return 0
 }
 
@@ -726,46 +808,55 @@ func (cpu *CPU) sei() uint8 {
 
 // store accumulator
 func (cpu *CPU) sta() uint8 {
+	cpu.ram.Write16(cpu.addr, cpu.reg.ac)
 	return 0
 }
 
 // store X
 func (cpu *CPU) stx() uint8 {
+	cpu.ram.Write16(cpu.addr, cpu.reg.x)
 	return 0
 }
 
 // store Y
 func (cpu *CPU) sty() uint8 {
+	cpu.ram.Write16(cpu.addr, cpu.reg.y)
 	return 0
 }
 
 // transfer accumulator to X
 func (cpu *CPU) tax() uint8 {
+	cpu.reg.x = cpu.reg.ac
 	return 0
 }
 
 // transfer accumulator to Y
 func (cpu *CPU) tay() uint8 {
+	cpu.reg.y = cpu.reg.ac
 	return 0
 }
 
 // transfer stack pointer to X
 func (cpu *CPU) tsx() uint8 {
+	cpu.reg.x = cpu.reg.sp
 	return 0
 }
 
 // transfer X to accumulator
 func (cpu *CPU) txa() uint8 {
+	cpu.reg.ac = cpu.reg.x
 	return 0
 }
 
 // transfer X to stack pointer
 func (cpu *CPU) txs() uint8 {
+	cpu.reg.sp = cpu.reg.x
 	return 0
 }
 
 // transfer Y to accumulator
 func (cpu *CPU) tya() uint8 {
+	cpu.reg.ac = cpu.reg.y
 	return 0
 }
 
